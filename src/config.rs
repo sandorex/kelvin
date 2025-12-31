@@ -20,34 +20,36 @@ pub struct Sensor {
     /// Name of the sensor
     pub name: String,
 
-    /// Label shown before the temperature
-    pub label: String,
+    // TODO these could also be accessible with `name_label` and `name_unit`
+    /// Label shown when not using custom format
+    pub label: Option<String>,
 
-    /// At what temperature should the alarm be triggered, if not set then no alarm will ever
-    /// trigger for this sensor
+    /// Unit shown when not using custom format
+    pub unit: Option<String>,
+
+    /// Trigger alarm when value goes above the value
     #[serde(default)]
-    pub alarm: Option<f32>,
+    pub alarm_high: Option<f32>,
+
+    /// Trigger alarm when value falls below the value
+    #[serde(default)]
+    pub alarm_low: Option<f32>,
 
     /// Maximum value the sensor should go up to
     pub max: f32,
-
-    // /// Midpoint for the sensor value, used for cosmetic purposes
-    // midpoint: f32,
 
     /// Minimum value the sensor should go down to
     pub min: f32,
 
     /// How many decimals to round the number to (0 meaning an integer)
+    ///
+    /// Note that is is only used when the value is shown
     #[serde(default)]
     pub round: Option<u8>,
 
     /// Map the value into a new range (can be used to convert to/from PWM or percentage)
     #[serde(default)]
     pub map: Option<SensorMap>,
-
-    // /// Convert the raw data into something else
-    // #[serde(default)]
-    // convert: Option<SensorConverter>,
 
     /// Path of the sensor or sensor sysfs file
     ///
@@ -73,55 +75,40 @@ fn get_by_path<'a>(object: &'a JsonValue, path: &Path) -> Option<&'a JsonValue> 
     return Some(value);
 }
 
-// fn format_float(value: f32, round: u8) -> String {
-//     // NOTE: this is awful but its the fastest i could do quickly
-//     match round {
-//         0 => format!("{:.0}", value),
-//         1 => format!("{:.1}", value),
-//         2 => format!("{:.2}", value),
-//         3 => format!("{:.3}", value),
-//         4 => format!("{:.4}", value),
-//         5 => format!("{:.5}", value),
-//         6 => format!("{:.6}", value),
-//         7 => format!("{:.7}", value),
-//         8 => format!("{:.8}", value),
-//         9 => format!("{:.9}", value),
-//         _ => panic!("Rounding to {:?} is not supported", round),
-//     }
-
-// }
-
 impl Sensor {
-    pub fn get_value(&self, sensors: &serde_json::Value) -> Result<String> {
-        // if its absolute read the file
+    /// Get value mapped appropriately
+    pub fn get_value(&self, sensors: &serde_json::Value) -> Result<f32> {
         let value = if self.path.is_absolute() {
             std::fs::read_to_string(self.path.as_path())
                 .with_context(|| anyhow!("Failed to read path {:?}", self.path))?
-        } else {
-            // TODO get first part of path and redirect to sensors or some other source
-            get_by_path(&sensors, self.path.as_path())
+        } else if let Ok(path) = self.path.strip_prefix("@sensors") {
+            get_by_path(&sensors, path)
                 .map(|x| x.to_string())
                 .with_context(|| anyhow!(""))?
+        } else {
+            bail!("Invalid path {:?}", self.path);
         };
 
-        // parse the float
-        let mut number: f32 = value
+        let mut number = value
             .parse()
-            .with_context(|| anyhow!("Unable to parse float from sensor {:?} output {value:?}", self.name))?;
+            .with_context(|| anyhow!("Could not parse float from {:?}", value))?;
 
         // map the value if requested
         if let Some(map) = &self.map {
             number = map.map(number, self.min, self.max);
         }
 
-        // format with specified precision
-        let number_str: String = match &self.round {
-            None => number.to_string(),
-            // NOTE: formats the float with specified number of decimals
-            Some(x) => format!("{:.*}", *x as usize, number),
-        };
+        Ok(number)
+    }
 
-        Ok(number_str)
+    /// Returns value formatted properly with the options (rounding, etc)
+    pub fn format_value(&self, value: f32) -> String {
+        // format with specified precision
+        match &self.round {
+            None => value.to_string(),
+            // NOTE: formats the float with specified number of decimals
+            Some(x) => format!("{:.*}", *x as usize, value),
+        }
     }
 }
 
@@ -157,31 +144,102 @@ pub struct Config {
     pub idle_poll_rate: u16,
 
     /// Sensors available in format
-    pub sensors: HashMap<String, Sensor>,
+    pub sensors: Vec<Sensor>,
 }
 
-// #[cfg(test)]
-// mod tests {
-//     use super::*;
-//
-//     // #[test]
-//     // fn test_converter() {
-//     //     Sensor::map(…)
-//     //     // use SensorConverter::*;
-//     //     //
-//     //     // let sensor = Sensor {
-//     //     //     min: 0.0,
-//     //     //     max: 3500.0,
-//     //     //     ..Default::default()
-//     //     // };
-//     //
-//     //     assert_eq!(PWM.convert_into(0.0, &sensor), 0.0);
-//     //     assert_eq!(PWM.convert_into(3500.0, &sensor), 255.0);
-//     //     assert_eq!(PWM.convert_into(1200.0, &sensor), 87.42857);
-//     //
-//     //     assert_eq!(PROCENTAGE.convert_into(0.0, &sensor), 0.0);
-//     //     assert_eq!(PROCENTAGE.convert_into(3500.0, &sensor), 100.0);
-//     //     assert_eq!(PROCENTAGE.convert_into(1750.0, &sensor), 50.0);
-//     // }
-// }
+/// Get hostname from system using either the environment or `hostname` command
+pub fn get_hostname() -> Result<String> {
+    // try to get hostname from env var
+    if let Ok(env_hostname) = std::env::var("HOSTNAME") {
+        return Ok(env_hostname);
+    }
+
+    // then as a fallback use hostname executable
+    let cmd = std::process::Command::new("hostname")
+        .output()
+        .with_context(|| "Could not call hostname")?;
+
+    let hostname = String::from_utf8_lossy(&cmd.stdout);
+
+    if !cmd.status.success() || hostname.is_empty() {
+        return Err(anyhow!("Unable to get hostname from host"));
+    }
+
+    Ok(hostname.trim().into())
+}
+
+impl Config {
+    pub fn read_from_file(path: &Path) -> Result<Self> {
+        let file_contents = std::fs::read_to_string(path)
+            .with_context(|| anyhow!("Unable to read config from file {path:?}"))?;
+
+        let config: Self = toml::from_str(&file_contents)
+            .with_context(|| anyhow!("Unable to parse config file {path:?}"))?;
+
+        Ok(config)
+    }
+
+    pub fn read_config() -> Result<Self> {
+        let hostname = get_hostname()?;
+
+        let config_dir = PathBuf::new()
+            .join(std::env::var("XDG_CONFIG_HOME").unwrap_or_else(|_| "~/.config/".to_string()))
+            .join("kelvin");
+
+        let etc_dir = PathBuf::new()
+            .join("/etc/kelvin");
+
+        let config_order = vec![
+            config_dir.join(format!("{}.toml", hostname)),
+            config_dir.join("default.toml"),
+
+            etc_dir.join(format!("{}.toml", hostname)),
+            etc_dir.join("default.toml"),
+        ];
+
+        for config_file in &config_order {
+            if config_file.exists() {
+                match Self::read_from_file(config_dir.join(&hostname).as_path()) {
+                    Ok(x) => return Ok(x),
+                    // print the error so user knows if there are mistakes in the config
+                    Err(e) => eprintln!("{}", e),
+                }
+            }
+        }
+
+        bail!("No valid config found in any of following paths\n{config_order:#?}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_format() {
+        fn sensor(round: Option<u8>) -> Sensor {
+            Sensor {
+                round,
+                ..Default::default()
+            }
+        }
+
+        assert_eq!(sensor(None).format_value(7.466321), "7.466321");
+        assert_eq!(sensor(Some(3)).format_value(7.466321), "7.466");
+        assert_eq!(sensor(Some(2)).format_value(7.466321), "7.47");
+        assert_eq!(sensor(Some(0)).format_value(7.466321), "7");
+    }
+
+    #[test]
+    fn test_value_map() {
+        let map = SensorMap {
+            min: 0.0,
+            max: 255.0,
+        };
+
+        assert_eq!(map.map(512.0, 0.0, 1024.0), 127.5);
+        assert_eq!(map.map(0.0, 0.0, 1024.0), 0.0);
+        assert_eq!(map.map(1024.0, 0.0, 1024.0), 255.0);
+    }
+}
 
