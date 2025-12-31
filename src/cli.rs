@@ -1,6 +1,7 @@
 use std::path::PathBuf;
+use clap::{Parser};
 
-use clap::{Args, Parser, Subcommand};
+const HELP_DAEMON: &str = "Daemon Related";
 
 /// Your friendly temperature monitor
 #[derive(Parser, Debug, Clone)]
@@ -16,89 +17,28 @@ pub struct Cli {
     #[clap(short, long, verbatim_doc_comment)]
     pub config: Option<PathBuf>,
 
-    // /// Target block device, leave empty for prompt
-    // // hide the flag on windows cause its useless
-    // #[cfg_attr(target_os = "windows", clap(skip))]
-    // pub target: Option<String>,
-    //
-    // /// Shows all disk devices instead of only removable ones (SD, Flash drive..)
-    // #[clap(long)]
-    // pub show_all_disks: bool,
+    /// Run in the background, alarm is always enabled in this mode
+    ///
+    /// Uses systemd if available to show logs in systemctl, if there is a
+    /// process running it will be restarted
+    #[clap(short, long, help_heading = HELP_DAEMON)]
+    pub daemon: bool,
 
-    // #[command(subcommand)]
-    // pub cmd: CliCommands,
+    /// Enable alarm
+    ///
+    /// Note that if you have a daemon process running this will won't do
+    /// anything, as two processes triggering alarms is jarring
+    #[clap(short, long)]
+    pub alarm: bool,
+
+    /// Kill existing daemon process
+    #[clap(long, help_heading = HELP_DAEMON)]
+    pub kill: bool,
+
+    /// Print the output once and quit
+    #[clap(long)]
+    pub once: bool,
 }
-
-// #[derive(Args, Debug, Clone)]
-// pub struct CmdShuffle {
-//     /// Repeats all songs until they fill up at minimum this amount of time
-//     ///
-//     /// This is a hack to implement quasi-shuffle by repeating everything but
-//     /// in different predefined order
-//     ///
-//     /// This feature can create A LOT of links so beware it can take a while
-//     #[clap(long)]
-//     pub repeat_fill: Option<Duration>,
-// }
-//
-// #[derive(Args, Debug, Clone)]
-// pub struct CmdClean {
-//     /// Remove songs as well as links
-//     #[clap(long, short)]
-//     pub songs: bool,
-// }
-//
-// #[derive(Args, Debug, Clone)]
-// pub struct CmdImport {
-//     /// Files or directories to recursively scan for MP3 files to import
-//     #[clap(required = true, num_args = 1..)]
-//     pub paths: Vec<PathBuf>,
-// }
-//
-// #[derive(Args, Debug, Clone)]
-// pub struct CmdProcess {
-//     /// Overwrite existing files
-//     #[clap(short, long)]
-//     pub overwrite: bool,
-//
-//     /// Adjust volume of files (in decibels)
-//     ///
-//     /// +/-10dB => doubles or halves the volume
-//     #[clap(short, long, allow_negative_numbers = true)]
-//     pub volume_adjustment: Option<f64>,
-//
-//     /// Output path
-//     #[clap(required = true)]
-//     pub output: PathBuf,
-//
-//     /// Files or directories to recursively scan for MP3 files to fix
-//     #[clap(required = true, num_args = 1..)]
-//     pub paths: Vec<PathBuf>,
-// }
-//
-// #[derive(Subcommand, Debug, Clone)]
-// pub enum CliCommands {
-//     /// Formats device/partition (ERASES ALL DATA!)
-//     ///
-//     /// In case target is a device block file then it formats it to contain a
-//     /// single FAT32 partition with MBR/BIOS partition table
-//     #[cfg_attr(target_os = "windows", clap(skip))]
-//     Format,
-//
-//     /// Shuffle music
-//     Shuffle(CmdShuffle),
-//
-//     /// Cleans up the links making it editable directly
-//     Clean(CmdClean),
-//
-//     /// Imports file into the filesystem without mounting it, will not overwrite files
-//     Import(CmdImport),
-//
-//     /// Processes files using ffmpeg to apply some adjustments (recommended)
-//     ///
-//     /// All options have a description but always test if the files are playable on a computer!
-//     Process(CmdProcess),
-// }
 
 #[cfg(test)]
 mod tests {

@@ -1,17 +1,48 @@
 use crate::prelude::*;
 use serde::Deserialize;
-use std::{collections::HashMap, path::{Path, PathBuf}};
+use std::path::{Path, PathBuf};
 use serde_json::Value as JsonValue;
 
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct SensorMap {
-    pub min: f32,
-    pub max: f32,
+    /// Range of values coming from the sensor
+    pub input: (f32, f32),
+
+    /// Range of values to map to
+    pub output: (f32, f32),
 }
 
 impl SensorMap {
-    pub fn map(&self, value: f32, min: f32, max: f32) -> f32 {
-        return (value - min) * (self.max - self.min) / (max - min) + min;
+    pub fn map(&self, value: f32) -> f32 {
+        // clamp the value so it cannot go above or below the limits
+        return (
+            (value - self.input.0) * (self.output.1 - self.output.0) / (self.input.1 - self.input.0) + self.input.0
+        ).clamp(self.output.0, self.output.1)
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct SensorLabel {
+    /// Name to use for the sensor
+    pub name: String,
+
+    /// Unit to use after the sensor name
+    pub unit: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SensorSource {
+    /// Read a file on filesystem, for exaple sysfs
+    File,
+
+    /// Read from lm_sensors output
+    Sensors,
+}
+
+impl Default for SensorSource {
+    fn default() -> Self {
+        Self::Sensors
     }
 }
 
@@ -20,12 +51,8 @@ pub struct Sensor {
     /// Name of the sensor
     pub name: String,
 
-    // TODO these could also be accessible with `name_label` and `name_unit`
-    /// Label shown when not using custom format
-    pub label: Option<String>,
-
-    /// Unit shown when not using custom format
-    pub unit: Option<String>,
+    #[serde(default)]
+    pub label: Option<SensorLabel>,
 
     /// Trigger alarm when value goes above the value
     #[serde(default)]
@@ -34,12 +61,6 @@ pub struct Sensor {
     /// Trigger alarm when value falls below the value
     #[serde(default)]
     pub alarm_low: Option<f32>,
-
-    /// Maximum value the sensor should go up to
-    pub max: f32,
-
-    /// Minimum value the sensor should go down to
-    pub min: f32,
 
     /// How many decimals to round the number to (0 meaning an integer)
     ///
@@ -51,10 +72,10 @@ pub struct Sensor {
     #[serde(default)]
     pub map: Option<SensorMap>,
 
+    /// Source of the sensor
+    pub source: SensorSource,
+
     /// Path of the sensor or sensor sysfs file
-    ///
-    /// To use lm_sensors use following format:
-    ///     @sensors/amdgpu-pci-0300/junction/temp2_input
     pub path: PathBuf,
 }
 
@@ -76,17 +97,30 @@ fn get_by_path<'a>(object: &'a JsonValue, path: &Path) -> Option<&'a JsonValue> 
 }
 
 impl Sensor {
+    pub fn prefix(&self) -> String {
+        // use label name if defined otherwise use name
+        format!("{}: ", self.label.as_ref().map(|x| x.name.as_str()).unwrap_or(&self.name))
+    }
+
+    pub fn suffix(&self) -> String {
+        // use label unit if defined
+        format!(" {}", self.label.as_ref().map(|x| x.unit.as_str()).unwrap_or(""))
+    }
+
     /// Get value mapped appropriately
     pub fn get_value(&self, sensors: &serde_json::Value) -> Result<f32> {
-        let value = if self.path.is_absolute() {
-            std::fs::read_to_string(self.path.as_path())
-                .with_context(|| anyhow!("Failed to read path {:?}", self.path))?
-        } else if let Ok(path) = self.path.strip_prefix("@sensors") {
-            get_by_path(&sensors, path)
-                .map(|x| x.to_string())
-                .with_context(|| anyhow!(""))?
-        } else {
-            bail!("Invalid path {:?}", self.path);
+        let value = match &self.source {
+            SensorSource::File => {
+                std::fs::read_to_string(self.path.as_path())
+                    .with_context(|| anyhow!("Failed to read path {:?}", self.path))?
+                    .trim()
+                    .to_string()
+            },
+            SensorSource::Sensors => {
+                get_by_path(&sensors, &self.path)
+                    .map(|x| x.to_string())
+                    .with_context(|| anyhow!("Unable to find {:?} in lm_sensors output", self.path))?
+            }
         };
 
         let mut number = value
@@ -95,7 +129,7 @@ impl Sensor {
 
         // map the value if requested
         if let Some(map) = &self.map {
-            number = map.map(number, self.min, self.max);
+            number = map.map(number);
         }
 
         Ok(number)
@@ -112,20 +146,6 @@ impl Sensor {
     }
 }
 
-// #[derive(Debug, Clone, Deserialize)]
-// enum TemperatureUnit {
-//     #[serde(rename = "c")]
-//     Celsius,
-//
-//     #[serde(rename = "f")]
-//     Fahrenheit,
-// }
-//
-// impl Default for TemperatureUnit {
-//     fn default() -> Self {
-//         Self::Celsius
-//     }
-// }
 
 // TODO implement serialization and default for generating config
 #[derive(Debug, Clone, Deserialize)]
@@ -232,14 +252,14 @@ mod tests {
 
     #[test]
     fn test_value_map() {
-        let map = SensorMap {
-            min: 0.0,
-            max: 255.0,
-        };
+        let map = SensorMap { input: (0.0, 1024.0), output: (0.0, 255.0)};
+        assert_eq!(map.map(512.0), 127.5);
+        assert_eq!(map.map(0.0), 0.0);
+        assert_eq!(map.map(1024.0), 255.0);
 
-        assert_eq!(map.map(512.0, 0.0, 1024.0), 127.5);
-        assert_eq!(map.map(0.0, 0.0, 1024.0), 0.0);
-        assert_eq!(map.map(1024.0, 0.0, 1024.0), 255.0);
+        // value passed is above or below the limits
+        assert_eq!(map.map(-512.0), 0.0);
+        assert_eq!(map.map(2000.0), 255.0);
     }
 }
 
