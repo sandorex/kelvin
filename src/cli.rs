@@ -17,6 +17,12 @@ pub struct Cli {
     #[clap(short, long, verbatim_doc_comment)]
     pub config: Option<PathBuf>,
 
+    /// Do not use custom format
+    ///
+    /// Meant for use when writing sensor configuration
+    #[clap(long)]
+    pub no_format: bool,
+
     /// Run in the background, alarm is always enabled in this mode
     ///
     /// Uses systemd if available to show logs in systemctl, if there is a

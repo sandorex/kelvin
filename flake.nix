@@ -35,8 +35,12 @@
         nativeBuildInputs = with pkgs; [
           git
           cargo
+
+          # rust stuff
           rustc
-          rust-analyzer # lsp
+          rust-analyzer
+          clippy
+          rustfmt
         ];
 
         inherit VERGEN_IDEMPOTENT VERGEN_GIT_SHA;

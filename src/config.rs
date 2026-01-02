@@ -157,11 +157,10 @@ pub struct Config {
     // /// Use fare
     // pub unit: TemperatureUnit,
 
-    /// How often to poll the temperature in active mode (in millis)
-    pub active_poll_rate: u16,
+    /// How often to check the temperature (in millis)
+    #[serde(default = "Config::default_poll_rate")]
+    pub poll_rate: u16,
 
-    /// How often to poll the temperature in idle mode (in millis)
-    pub idle_poll_rate: u16,
 
     /// Sensors available in format
     pub sensors: Vec<Sensor>,
@@ -189,6 +188,10 @@ pub fn get_hostname() -> Result<String> {
 }
 
 impl Config {
+    fn default_poll_rate() -> u16 {
+        2_000
+    }
+
     pub fn read_from_file(path: &Path) -> Result<Self> {
         let file_contents = std::fs::read_to_string(path)
             .with_context(|| anyhow!("Unable to read config from file {path:?}"))?;
