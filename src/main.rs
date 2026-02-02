@@ -2,14 +2,14 @@ mod cli;
 mod config;
 
 pub mod prelude {
-    pub use anyhow::{Context, Result, anyhow, bail};
+    pub use anyhow::{Context as AnyhowContext, Result, anyhow, bail};
 }
 
 use clap::Parser;
 use prelude::*;
 use serde_json::Value as JsonValue;
-use crate::config::Config;
-use std::{cell::OnceCell, fmt::Write as _, io::{BufRead, BufReader}};
+use crate::config::{Config, Sensor};
+use std::{cell::OnceCell, collections::HashMap, io::{BufRead, BufReader}};
 
 fn get_temps() -> Result<JsonValue> {
     let output = std::process::Command::new("sensors")
@@ -23,56 +23,34 @@ fn get_temps() -> Result<JsonValue> {
         .with_context(|| anyhow!("Unable to parse json from sensors"))
 }
 
-// TODO this function is getting bloated, rework it so all sensors etc are just keys in a hashmap
-fn gen_format(args: &cli::Cli, config: &Config, temps: &JsonValue, cpu_usage: &str) -> Result<String> {
-    let timestamp = chrono::Local::now().format("%H:%M:%S").to_string();
-    let mut output = String::new();
-
-    if args.no_format || config.format.is_none() {
-        // simply list all the sensors
-        for sensor in &config.sensors {
-            let value = sensor.get_value(&temps)?;
-            writeln!(&mut output, "{}{}{}", sensor.prefix(), sensor.format_value(value), sensor.suffix())?;
-        }
-    } else {
-        output = config.format.clone().expect("config.format is None");
-
-        // replace each sensor with rust-like format! syntax {sensor_name}
-        for sensor in &config.sensors {
-            let sensor_pattern = format!("{{{}}}", sensor.name);
-
-            // ignore sensors that are not inside so they dont need to be calculated
-            if !output.contains(&sensor_pattern) {
-                continue;
-            }
-
-            let value = sensor.get_value(&temps)?;
-            output = output.replace(&sensor_pattern, &sensor.format_value(value));
-        }
-
-        if output.contains("{timestamp}") {
-            output = output.replace("{timestamp}", &timestamp);
-        }
-
-        if output.contains("{cpu_usage}") {
-            output = output.replace("{cpu_usage}", cpu_usage);
-        }
-    }
-
-    Ok(output.trim().to_string())
-}
 
 const CLEAR_SEQ: &str = "\x1b[H\x1b[2J";
 
 #[derive(Debug)]
-struct CPUUsage {
+struct Context {
+    args: cli::Cli,
+    config: Config,
+    sensors_data: JsonValue,
+}
+
+trait Widget {
+    fn value(&mut self, ctx: &Context) -> Result<String>;
+
+    fn update(&mut self, _ctx: &Context) -> Result<()> {
+        // update is not required for all widgets
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+struct CPUUsageWidget {
     last_idle: u64,
     last_sum: u64,
     cpu_count: OnceCell<u8>,
 }
 
 #[allow(dead_code)]
-impl CPUUsage {
+impl CPUUsageWidget {
     fn get_cpu_count() -> u8 {
         let output = std::process::Command::new("nproc")
             .output()
@@ -125,8 +103,8 @@ impl CPUUsage {
     pub fn refresh(&mut self) -> Result<()> {
         let usage = Self::get_cpu_usage()?;
 
+        self.last_idle = usage[3];
         self.last_sum = usage.iter().sum();
-        self.last_idle = usage[4];
 
         Ok(())
     }
@@ -151,6 +129,53 @@ impl CPUUsage {
     }
 }
 
+impl Widget for CPUUsageWidget {
+    fn value(&mut self, _ctx: &Context) -> Result<String> {
+        // limit the decimals to 1
+        self.get().map(|x| format!("{x:.1}"))
+    }
+
+    fn update(&mut self, _ctx: &Context) -> Result<()> {
+        self.refresh()
+    }
+}
+
+#[derive(Debug)]
+struct SensorWidget {
+    sensor: Sensor,
+}
+
+impl Widget for SensorWidget {
+    fn value(&mut self, ctx: &Context) -> Result<String> {
+        Ok(self.sensor.format_value(self.sensor.get_value(&ctx.sensors_data)?))
+    }
+}
+
+#[derive(Debug)]
+struct TimeWidget;
+
+impl Widget for TimeWidget {
+    fn value(&mut self, _ctx: &Context) -> Result<String> {
+        Ok(chrono::Local::now().format("%H:%M:%S").to_string())
+    }
+}
+
+fn format_var(var: &str) -> String {
+    // very simple "{var}" formatter
+    format!("{{{var}}}")
+}
+
+#[derive(Debug)]
+struct DummyWidget(String);
+
+impl Widget for DummyWidget {
+    fn value(&mut self, _ctx: &Context) -> Result<String> {
+        Ok(self.0.clone())
+    }
+}
+
+const MINIMAL_POLL_RATE: u16 = 1000;
+
 // TODO warn user of any panic or crash!
 fn main() -> Result<()> {
     let args = cli::Cli::parse();
@@ -161,8 +186,8 @@ fn main() -> Result<()> {
         Config::read_config()?
     };
 
-    if config.poll_rate < 500 {
-        bail!("Poll rate must be at least 500ms");
+    if config.poll_rate < MINIMAL_POLL_RATE {
+        bail!("Poll rate must be at least {}ms", MINIMAL_POLL_RATE);
     }
 
     if args.kill {
@@ -174,38 +199,91 @@ fn main() -> Result<()> {
         todo!();
     }
 
+    // struct to hold all the data that widgets have access to
+    let mut ctx = Context {
+        args,
+        config,
+        sensors_data: get_temps()?,
+    };
+
+    // TODO if no format just list all in order
+    if ctx.args.no_format || ctx.config.format.is_none() {
+        todo!();
+    }
+
     // TODO alarms
 
-    if args.once {
-        // no screen clearing for the single run
-        let temps = get_temps()?;
-        let output = gen_format(&args, &config, &temps, "?")?;
-        println!("{output}");
+    let mut widgets: HashMap<String, Box<dyn Widget>> = HashMap::new();
+
+    // only create widgets that are actually used
+    {
+        let format = ctx.config.format.as_ref().unwrap();
+
+        // filtering out sensors that are not used
+        //
+        // NOTE: i am taking the sensors vector to simplify the ownership
+        for sensor in std::mem::take(&mut ctx.config.sensors) {
+            let var = format_var(&sensor.name);
+            if format.contains(&var) {
+                widgets.insert(var, Box::new(SensorWidget { sensor: sensor }));
+            }
+        }
+
+        let var = format_var("time");
+        if format.contains(&var) {
+            widgets.insert(var, Box::new(TimeWidget));
+        }
+
+        let var = format_var("cpu_usage");
+        if format.contains(&var) {
+            if ctx.args.once {
+                // cpu usage cannot be calculated quickly
+                widgets.insert(var, Box::new(DummyWidget("??".to_string())));
+            } else {
+                widgets.insert(var, Box::new(CPUUsageWidget::new()));
+            }
+        }
+    }
+
+    fn update_format(ctx: &Context, format: &mut String, widgets: &mut HashMap<String, Box<dyn Widget>>) -> Result<()> {
+        // replace all instances
+        for (var, widget) in widgets.iter_mut() {
+            *format = format.replace(var, &widget.value(&ctx)?);
+        }
+
+        Ok(())
+    }
+
+    let mut format = ctx.config.format.as_ref().unwrap().clone();
+
+    if ctx.args.once {
+        update_format(&ctx, &mut format, &mut widgets)?;
+
+        println!("{}", format);
     } else {
         use std::thread::sleep;
         use std::time::Duration;
 
-        let mut cpu_usage_struct = CPUUsage::new();
-
         loop {
-            let cpu_usage = format!("{:.1}", cpu_usage_struct.get()?);
+            update_format(&ctx, &mut format, &mut widgets)?;
+            println!("{CLEAR_SEQ}{format}");
 
-            let temps = get_temps()?;
-            let output = gen_format(&args, &config, &temps, &cpu_usage)?;
-            println!("{CLEAR_SEQ}{output}");
+            if ctx.config.poll_rate > MINIMAL_POLL_RATE {
+                sleep(Duration::from_millis((ctx.config.poll_rate - MINIMAL_POLL_RATE).into()));
+            }
 
-            // if config.poll_rate > 1_000 {
-                // sleep for most of the duration
-                // sleep(Duration::from_millis((config.poll_rate - 1_000) as u64));
+            // update all widgets
+            for (_, widget) in widgets.iter_mut() {
+                widget.update(&ctx)?;
+            }
 
-                // get current cpu usage second before actual poll rate
-                // last_cpu = get_cpu_usage()?;
-                // last_cpu_sum = last_cpu.iter().sum();
-                sleep(Duration::from_millis(1000));
-            // } else {
-            //     todo!();
-            //     // sleep(Duration::from_millis(config.poll_rate as u64))
-            // }
+            sleep(Duration::from_millis(MINIMAL_POLL_RATE.into()));
+
+            // reset format
+            format = ctx.config.format.as_ref().unwrap().clone();
+
+            // get fresh sensor data
+            ctx.sensors_data = get_temps()?;
         }
     }
 

@@ -189,7 +189,7 @@ pub fn get_hostname() -> Result<String> {
 
 impl Config {
     fn default_poll_rate() -> u16 {
-        2_000
+        crate::MINIMAL_POLL_RATE
     }
 
     pub fn read_from_file(path: &Path) -> Result<Self> {
