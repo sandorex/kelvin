@@ -27,23 +27,29 @@ pub struct Cli {
     ///
     /// Uses systemd if available to show logs in systemctl, if there is a
     /// process running it will be restarted
-    #[clap(short, long, help_heading = HELP_DAEMON)]
+    #[clap(skip)]
+    // #[clap(short, long, help_heading = HELP_DAEMON)]
     pub daemon: bool,
 
     /// Enable alarm
     ///
     /// Note that if you have a daemon process running this will won't do
     /// anything, as two processes triggering alarms is jarring
-    #[clap(short, long)]
+    #[clap(skip)]
+    // #[clap(short, long)]
     pub alarm: bool,
 
     /// Kill existing daemon process
-    #[clap(long, help_heading = HELP_DAEMON)]
+    #[clap(skip)]
+    // #[clap(long, help_heading = HELP_DAEMON)]
     pub kill: bool,
 
     /// Print the output once and quit
     #[clap(long)]
     pub once: bool,
+
+    // TODO
+    // pub alarm_method: <enum>
 }
 
 #[cfg(test)]

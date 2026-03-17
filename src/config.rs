@@ -47,20 +47,18 @@ impl Default for SensorSource {
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct Sensor {
     /// Name of the sensor
     pub name: String,
 
-    #[serde(default)]
-    pub label: Option<SensorLabel>,
-
-    /// Trigger alarm when value goes above the value
-    #[serde(default)]
-    pub alarm_high: Option<f32>,
-
-    /// Trigger alarm when value falls below the value
-    #[serde(default)]
-    pub alarm_low: Option<f32>,
+    // /// Trigger alarm when value goes above the value
+    // #[serde(default)]
+    // pub alarm_high: Option<f32>,
+    //
+    // /// Trigger alarm when value falls below the value
+    // #[serde(default)]
+    // pub alarm_low: Option<f32>,
 
     /// How many decimals to round the number to (0 meaning an integer)
     ///
@@ -97,16 +95,6 @@ fn get_by_path<'a>(object: &'a JsonValue, path: &Path) -> Option<&'a JsonValue> 
 }
 
 impl Sensor {
-    pub fn prefix(&self) -> String {
-        // use label name if defined otherwise use name
-        format!("{}: ", self.label.as_ref().map(|x| x.name.as_str()).unwrap_or(&self.name))
-    }
-
-    pub fn suffix(&self) -> String {
-        // use label unit if defined
-        format!(" {}", self.label.as_ref().map(|x| x.unit.as_str()).unwrap_or(""))
-    }
-
     /// Get value mapped appropriately
     pub fn get_value(&self, sensors: &serde_json::Value) -> Result<f32> {
         let value = match &self.source {
@@ -145,7 +133,6 @@ impl Sensor {
         }
     }
 }
-
 
 // TODO implement serialization and default for generating config
 #[derive(Debug, Clone, Deserialize)]
